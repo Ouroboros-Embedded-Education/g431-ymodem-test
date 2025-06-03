@@ -22,13 +22,36 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "usbd_cdc_if.h"
+#include <stdint.h>
+#include <stdbool.h>
+
 #include "ymodem.h"
+
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+#include "queue.h"
+#include "timers.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct{
+	bool fileIsOpen;
 
+	ymodem_t Ymodem;
+
+	TaskHandle_t task;
+	QueueHandle_t RxQueue;
+	SemaphoreHandle_t TxSemaphore;
+	TimerHandle_t RstTimer;
+	bool started;
+}receive_file_t;
+
+typedef struct{
+	uint8_t raw[64];
+	uint16_t len;
+}rec_data_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -51,11 +74,9 @@ DMA_HandleTypeDef hdma_usart3_rx;
 DMA_HandleTypeDef hdma_usart3_tx;
 
 /* USER CODE BEGIN PV */
-ymodem_t Ymodem;
-
-uint8_t counter = 0;
-uint32_t RecBytes = 0;
-uint8_t RxUart;
+receive_file_t _RecFile = {0};
+uint8_t data;
+uint32_t recBytes = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,45 +91,118 @@ static void MX_USART3_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void CDC_ReceiveCplt_FS(uint8_t *Buf, uint32_t Len){
-
-}
-
-uint8_t _write_to_usb_cdc(uint8_t *buf, uint32_t len){
-	HAL_UART_Transmit(&huart3, buf, len, 100);
-
-	return 0;
-}
-
+/* UART Callbacks */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart){
+	BaseType_t taskWoken = pdFALSE;
 
+	xSemaphoreGiveFromISR(_RecFile.TxSemaphore, &taskWoken);
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
-	counter = 0;
-	RecBytes++;
-	ymodem_ReceiveByte(&Ymodem, RxUart);
-	HAL_UART_Receive_DMA(huart, &RxUart, 1);
+	BaseType_t taskWoken = pdFALSE;
+
+	if (_RecFile.started == false){
+		return;
+	}
+	if (xQueueSendFromISR(_RecFile.RxQueue, &data, &taskWoken) != pdTRUE){
+		// lost byte
+	}
+	HAL_UART_Receive_DMA(&huart3, &data, sizeof(data));
+	recBytes++;
 }
 
+/* Ymodem callback */
 ymodem_err_e ymodem_FileCallback(ymodem_t *ymodem, ymodem_file_cb_e e, uint8_t *data, uint32_t len){
+	char *FileName;
+
 	switch (e){
 	case YMODEM_FILE_CB_NAME:
-		printf("File Name %s", (char*)data);
+		if (_RecFile.fileIsOpen == false){
+			_RecFile.fileIsOpen = true;
+		}
 		break;
+
 	case YMODEM_FILE_CB_DATA:
-
 		break;
+
 	case YMODEM_FILE_CB_END:
-
-		break;
 	case YMODEM_FILE_CB_ABORTED:
-
+		if (_RecFile.fileIsOpen == true){
+			_RecFile.fileIsOpen  = false;
+		}
 		break;
 	}
 
 	return YMODEM_OK;
 }
+
+/* Reset Timer */
+void _RecFile_Abort_Timeout(TimerHandle_t xTimer){
+	ymodem_Reset(&_RecFile.Ymodem);
+}
+
+/* Uart Tx Aux function */
+uint8_t _uart_tx(uint8_t *data, uint32_t len){
+	HAL_UART_Transmit(&huart3, data, len, 100);
+	return 0;
+}
+
+/* Task */
+void task_receive_file(void *pvParams){
+	rec_data_t RecData;
+	uint16_t i;
+	ymodem_err_e ymodemRet;
+	BaseType_t queueRet;
+
+	_RecFile.TxSemaphore = xSemaphoreCreateBinary();
+	_RecFile.RxQueue = xQueueCreate(512, sizeof(data));
+	_RecFile.RstTimer = xTimerCreate("Reset Ymodem",
+									 pdMS_TO_TICKS(1500),
+									 pdFALSE,
+									 NULL,
+									 _RecFile_Abort_Timeout);
+	ymodem_Init(&_RecFile.Ymodem, _uart_tx);
+	HAL_UART_Receive_DMA(&huart3, &data, sizeof(data));
+	_RecFile.started = true;
+	while(1) {
+		queueRet = xQueueReceive(_RecFile.RxQueue, &RecData, pdMS_TO_TICKS(1000));
+		if (queueRet == pdTRUE){
+			if (xTimerIsTimerActive(_RecFile.RstTimer) != pdFALSE){
+				xTimerStart(_RecFile.RstTimer, 0);
+			}
+			else{
+				xTimerReset(_RecFile.RstTimer, 0);
+			}
+
+			ymodemRet = ymodem_ReceiveByte(&_RecFile.Ymodem, RecData.raw[i]);
+			switch (ymodemRet){
+			case YMODEM_OK:
+
+				break;
+			case YMODEM_TX_PENDING:
+
+				break;
+			case YMODEM_ABORTED:
+				ymodem_Reset(&_RecFile.Ymodem);
+				break;
+			case YMODEM_WRITE_ERR:
+				ymodem_Reset(&_RecFile.Ymodem);
+				break;
+			case YMODEM_SIZE_ERR:
+				ymodem_Reset(&_RecFile.Ymodem);
+				break;
+			case YMODEM_COMPLETE:
+				ymodem_Reset(&_RecFile.Ymodem);
+				break;
+			}
+		}
+		else{
+			uint8_t d = 'C';
+			_uart_tx(&d, sizeof(d));
+		}
+	}
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -149,21 +243,16 @@ int main(void)
   HAL_Delay(1000);
   HAL_UART_Transmit(&huart3, (uint8_t*)welcome, strlen(welcome), 100);
   HAL_Delay(200);
-  HAL_UART_Receive_DMA(&huart3, &RxUart, 1);
-  ymodem_Init(&Ymodem, _write_to_usb_cdc);
+
+  xTaskCreate(task_receive_file, "File Receive", 512, NULL, 1, NULL);
+
+  vTaskStartScheduler();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  HAL_Delay(10);
-	  counter++;
-	  if (counter > 100){
-		  counter = 0;
-		  ymodem_Reset(&Ymodem);
-		  _write_to_usb_cdc(&d, 1);
-	  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -316,16 +405,16 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel1_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
   /* DMA1_Channel2_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
   /* DMA1_Channel3_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
   /* DMA1_Channel4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
 
 }
@@ -382,6 +471,28 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM8 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM8)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
