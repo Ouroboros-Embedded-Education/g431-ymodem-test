@@ -1,0 +1,13 @@
+../libs/ymodem/ymodem.c:73:6:ymodem_Init	16	static
+../libs/ymodem/ymodem.c:104:21:GenerateResponse	16	static
+../libs/ymodem/ymodem.c:170:14:ymodem_Abort	16	static
+../libs/ymodem/ymodem.c:187:15:ymodem_Reset	16	static
+../libs/ymodem/ymodem.c:212:14:ymodem_ReceiveByte	24	static
+../libs/ymodem/ymodem.c:304:17:ymodem_ProcessPacket	24	static
+../libs/ymodem/ymodem.c:338:17:ymodem_ProcessDataPacket	32	static
+../libs/ymodem/ymodem.c:364:17:ymodem_ProcessFirstPacket	32	static
+../libs/ymodem/ymodem.c:409:13:ymodem_WriteSerial	16	static
+../libs/ymodem/ymodem.c:415:17:Str2Int	32	static
+../libs/ymodem/ymodem.c:441:17:crc_update	24	static
+../libs/ymodem/ymodem.c:456:17:crc16	24	static
+../libs/ymodem/ymodem.c:470:17:ymodem_CheckCRC	32	static
