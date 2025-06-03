@@ -149,8 +149,7 @@ uint8_t _uart_tx(uint8_t *data, uint32_t len){
 
 /* Task */
 void task_receive_file(void *pvParams){
-	rec_data_t RecData;
-	uint16_t i;
+	uint8_t RecData;
 	ymodem_err_e ymodemRet;
 	BaseType_t queueRet;
 
@@ -174,7 +173,7 @@ void task_receive_file(void *pvParams){
 				xTimerReset(_RecFile.RstTimer, 0);
 			}
 
-			ymodemRet = ymodem_ReceiveByte(&_RecFile.Ymodem, RecData.raw[i]);
+			ymodemRet = ymodem_ReceiveByte(&_RecFile.Ymodem, RecData);
 			switch (ymodemRet){
 			case YMODEM_OK:
 
@@ -214,7 +213,6 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 	char welcome[] = "Device is ready!\n";
-	uint8_t d = 'c';
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
